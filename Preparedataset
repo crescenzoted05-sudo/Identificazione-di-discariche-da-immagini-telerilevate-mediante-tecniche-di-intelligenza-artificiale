@@ -1,0 +1,170 @@
+#=========================================================
+# Suddivisione del dataset in test,validation e training
+#========================================================
+import os
+import cv2
+import random
+from sklearn.model_selection import train_test_split
+
+# =========================
+# PATH ORIGINALI
+# =========================
+ORIGINAL_IMAGES_DIR = r"C:\Users\Crescenzo\Desktop\dataset_seg\images"
+ORIGINAL_MASKS_DIR = r"C:\Users\Crescenzo\Desktop\dataset_seg\masks"
+
+# =========================
+# OUTPUT DATASET SPLITTATO E PATCHATO
+# =========================
+OUTPUT_BASE = r"C:\Users\Crescenzo\Desktop\Split_512Augmentation"
+
+TRAIN_IMG_DIR = os.path.join(OUTPUT_BASE, "train", "images")
+TRAIN_MASK_DIR = os.path.join(OUTPUT_BASE, "train", "masks")
+
+VAL_IMG_DIR = os.path.join(OUTPUT_BASE, "val", "images")
+VAL_MASK_DIR = os.path.join(OUTPUT_BASE, "val", "masks")
+
+TEST_IMG_DIR = os.path.join(OUTPUT_BASE, "test", "images")
+TEST_MASK_DIR = os.path.join(OUTPUT_BASE, "test", "masks")
+
+PATCH_SIZE = 512
+NEGATIVE_KEEP_RATIO = 0.2
+RANDOM_STATE = 42
+
+for d in [
+    TRAIN_IMG_DIR, TRAIN_MASK_DIR,
+    VAL_IMG_DIR, VAL_MASK_DIR,
+    TEST_IMG_DIR, TEST_MASK_DIR
+]:
+    os.makedirs(d, exist_ok=True)
+
+
+def get_positions(size, patch_size=512, stride=256):
+    if size <= patch_size:
+        return [0]
+    positions = list(range(0, size - patch_size + 1, stride))
+    if positions[-1] != size - patch_size:
+        positions.append(size - patch_size)
+    return positions
+
+
+def save_patches(image_path, mask_path, out_img_dir, out_mask_dir,
+                 patch_size=512, negative_keep_ratio=0.2, filter_negative=False, augment=False):
+    image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
+    if image is None or mask is None:
+        print(f"Errore lettura: {image_path}")
+        return 0
+
+    h, w = mask.shape
+    ys = get_positions(h, patch_size, stride=256)
+    xs = get_positions(w, patch_size, stride=256)
+
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    saved = 0
+
+    for y in ys:
+        for x in xs:
+            img_patch = image[y:y+patch_size, x:x+patch_size]
+            mask_patch = mask[y:y+patch_size, x:x+patch_size]
+
+            if img_patch.shape[0] != patch_size or img_patch.shape[1] != patch_size:
+                continue
+            if mask_patch.shape[0] != patch_size or mask_patch.shape[1] != patch_size:
+                continue
+
+            has_positive = (mask_patch > 0).any()
+
+            save_this = True
+            if filter_negative and (not has_positive):
+                save_this = random.random() < negative_keep_ratio
+
+            if not save_this:
+                continue
+
+            # patch originale
+            patch_name = f"{base_name}_{y}_{x}.png"
+            cv2.imwrite(os.path.join(out_img_dir, patch_name), img_patch)
+            cv2.imwrite(os.path.join(out_mask_dir, patch_name), mask_patch)
+            saved += 1
+
+            # augmentation solo sui positivi
+            if augment and has_positive:
+                augmented_versions = [
+                    ("_hflip", cv2.flip(img_patch, 1), cv2.flip(mask_patch, 1)),
+                    ("_vflip", cv2.flip(img_patch, 0), cv2.flip(mask_patch, 0)),
+                    ("_rot180", cv2.rotate(img_patch, cv2.ROTATE_180),
+                     cv2.rotate(mask_patch, cv2.ROTATE_180)),
+                ]
+
+                for suffix, aug_img, aug_mask in augmented_versions:
+                    aug_name = f"{base_name}_{y}_{x}{suffix}.png"
+                    cv2.imwrite(os.path.join(out_img_dir, aug_name), aug_img)
+                    cv2.imwrite(os.path.join(out_mask_dir, aug_name), aug_mask)
+                    saved += 1
+
+    return saved
+
+
+all_files = sorted(os.listdir(ORIGINAL_IMAGES_DIR))
+all_files = [f for f in all_files if os.path.exists(os.path.join(ORIGINAL_MASKS_DIR, f))]
+
+print("Immagini originali trovate:", len(all_files))
+
+train_files, temp_files = train_test_split(
+    all_files, test_size=0.30, random_state=RANDOM_STATE
+)
+
+val_files, test_files = train_test_split(
+    temp_files, test_size=0.50, random_state=RANDOM_STATE
+)
+
+print("Original train:", len(train_files))
+print("Original val:", len(val_files))
+print("Original test:", len(test_files))
+
+random.seed(RANDOM_STATE)
+
+train_saved = 0
+for f in train_files:
+    image_path = os.path.join(ORIGINAL_IMAGES_DIR, f)
+    mask_path = os.path.join(ORIGINAL_MASKS_DIR, f)
+    train_saved += save_patches(
+        image_path, mask_path,
+        TRAIN_IMG_DIR, TRAIN_MASK_DIR,
+        patch_size=PATCH_SIZE,
+        negative_keep_ratio=NEGATIVE_KEEP_RATIO,
+        filter_negative=True,
+        augment=True
+    )
+
+val_saved = 0
+for f in val_files:
+    image_path = os.path.join(ORIGINAL_IMAGES_DIR, f)
+    mask_path = os.path.join(ORIGINAL_MASKS_DIR, f)
+    val_saved += save_patches(
+        image_path, mask_path,
+        VAL_IMG_DIR, VAL_MASK_DIR,
+        patch_size=PATCH_SIZE,
+        negative_keep_ratio=0.5,
+        filter_negative=True,
+        augment=False
+    )
+
+test_saved = 0
+for f in test_files:
+    image_path = os.path.join(ORIGINAL_IMAGES_DIR, f)
+    mask_path = os.path.join(ORIGINAL_MASKS_DIR, f)
+    test_saved += save_patches(
+        image_path, mask_path,
+        TEST_IMG_DIR, TEST_MASK_DIR,
+        patch_size=PATCH_SIZE,
+        negative_keep_ratio=0.5,
+        filter_negative=True,
+        augment=False
+    )
+
+print("Patch train salvate:", train_saved)
+print("Patch val salvate:", val_saved)
+print("Patch test salvate:", test_saved)
+print("Dataset pronto in:", OUTPUT_BASE)
